@@ -25,6 +25,19 @@ router.post('/auth/login', async (req, res) => {
     const { email, password } = req.body;
     const user = db.findOne('users', u => u.email === email);
     if (!user || !(await bcrypt.compare(password, user.password))) return res.status(401).json({ error: 'Invalid credentials' });
+    // Update streak
+    const today = new Date().toISOString().slice(0, 10);
+    const lastLogin = user.last_login_date || '';
+    const yesterday = new Date(Date.now() - 86400000).toISOString().slice(0, 10);
+    let streak = user.streak || 0;
+    if (lastLogin === today) {
+      // same day login, no change
+    } else if (lastLogin === yesterday) {
+      streak += 1;
+    } else {
+      streak = 1;
+    }
+    db.update('users', u => u.id === user.id, { last_login_date: today, streak });
     res.json({ token: generateToken(user.id), user: { id: user.id, name: user.name, email: user.email } });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
@@ -381,4 +394,130 @@ router.post('/feedback', authMiddleware, (req, res) => {
   res.json({ success: true });
 });
 
+// ==================== SOCIAL FEED ====================
+router.get('/feed', authMiddleware, (req, res) => {
+  const items = [];
+
+  // Real user posts
+  const posts = db.findAll('posts', () => true);
+  posts.forEach(p => items.push({ ...p, _src: 'post' }));
+
+  // Recent completed exchanges as activity
+  db.findAll('exchanges', e => e.status === 'completed').slice(-15).forEach(e => {
+    items.push({ id: `ex-${e.id}`, type: 'activity', user_id: e.teacher_id, user_name: e.teacher_name, avatar_color: null, content: `🎓 Completed a skill exchange — taught <strong>${e.skill_name}</strong> to ${e.learner_name}`, created_at: e.completed_at || e.created_at, likes: 0, liked_by: [], is_activity: true });
+  });
+
+  // Recent skill additions
+  db.findAll('skills', s => s.user_id).slice(-15).forEach(s => {
+    items.push({ id: `sk-${s.id}`, type: 'activity', user_id: s.user_id, user_name: s.user_name, avatar_color: null, content: `🎯 Added a new skill: <strong>${s.name}</strong> (${s.level} · ${s.category})`, created_at: s.created_at, likes: 0, liked_by: [], is_activity: true });
+  });
+
+  // Enrich with avatar colors from users
+  const userMap = {};
+  db.findAll('users', () => true).forEach(u => { userMap[u.id] = u.avatar_color; });
+  items.forEach(item => { if (!item.avatar_color && item.user_id && userMap[item.user_id]) item.avatar_color = userMap[item.user_id]; });
+
+  items.sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
+  res.json(items.slice(0, 40));
+});
+
+router.post('/feed', authMiddleware, (req, res) => {
+  const { content } = req.body;
+  if (!content?.trim()) return res.status(400).json({ error: 'Content required' });
+  const user = db.findOne('users', u => u.id === req.userId);
+  const post = db.insert('posts', { user_id: req.userId, user_name: user?.name, avatar_color: user?.avatar_color, content: content.trim(), type: 'post', created_at: new Date().toISOString(), likes: 0, liked_by: [] });
+  res.json({ id: post.lastInsertRowid });
+});
+
+router.post('/feed/:id/like', authMiddleware, (req, res) => {
+  const postId = parseInt(req.params.id);
+  if (isNaN(postId)) return res.status(400).json({ error: 'Invalid id' });
+  const post = db.findOne('posts', p => p.id === postId);
+  if (!post) return res.status(404).json({ error: 'Post not found' });
+  const likedBy = post.liked_by || [];
+  const alreadyLiked = likedBy.includes(req.userId);
+  const newLiked = alreadyLiked ? likedBy.filter(id => id !== req.userId) : [...likedBy, req.userId];
+  db.update('posts', p => p.id === postId, { likes: newLiked.length, liked_by: newLiked });
+  res.json({ likes: newLiked.length, liked: !alreadyLiked });
+});
+
+// ==================== GROUPS ====================
+router.get('/groups', authMiddleware, (req, res) => {
+  let groups = db.findAll('groups', () => true);
+  if (groups.length === 0) {
+    const defaults = [
+      { name: 'Web Developers Hub', description: 'A community for web developers to share knowledge and resources.', category: 'Technology', color: '#7c4dff', created_by: 0, created_by_name: 'SkillBank', members: [], created_at: new Date().toISOString() },
+      { name: 'Music Makers', description: 'Musicians of all levels sharing skills and jamming together.', category: 'Music', color: '#e040fb', created_by: 0, created_by_name: 'SkillBank', members: [], created_at: new Date().toISOString() },
+      { name: 'Language Exchange Circle', description: 'Practice languages with native speakers from around the world.', category: 'Languages', color: '#00e5ff', created_by: 0, created_by_name: 'SkillBank', members: [], created_at: new Date().toISOString() },
+      { name: 'Creative Design Studio', description: 'Designers collaborating on projects and sharing techniques.', category: 'Creative Arts', color: '#00e676', created_by: 0, created_by_name: 'SkillBank', members: [], created_at: new Date().toISOString() },
+    ];
+    defaults.forEach(g => db.insert('groups', g));
+    groups = db.findAll('groups', () => true);
+  }
+  groups = groups.map(g => ({ ...g, member_count: (g.members || []).length, is_member: (g.members || []).includes(req.userId) }));
+  res.json(groups);
+});
+
+router.post('/groups', authMiddleware, (req, res) => {
+  const { name, description, category, color } = req.body;
+  if (!name) return res.status(400).json({ error: 'Name required' });
+  const user = db.findOne('users', u => u.id === req.userId);
+  const group = db.insert('groups', { name, description: description || '', category: category || 'Other', color: color || '#7c4dff', created_by: req.userId, created_by_name: user?.name, members: [req.userId], created_at: new Date().toISOString() });
+  res.json({ id: group.lastInsertRowid });
+});
+
+router.post('/groups/:id/join', authMiddleware, (req, res) => {
+  const group = db.findOne('groups', g => g.id === parseInt(req.params.id));
+  if (!group) return res.status(404).json({ error: 'Group not found' });
+  const members = group.members || [];
+  const isMember = members.includes(req.userId);
+  const newMembers = isMember ? members.filter(m => m !== req.userId) : [...members, req.userId];
+  db.update('groups', g => g.id === group.id, { members: newMembers });
+  res.json({ member_count: newMembers.length, is_member: !isMember });
+});
+
+// ==================== FORUMS ====================
+router.get('/forums', authMiddleware, (req, res) => {
+  let threads = db.findAll('forum_threads', () => true);
+  if (threads.length === 0) {
+    const defaults = [
+      { title: 'Best practices for remote skill teaching?', content: 'Share your tips for effective online teaching and remote skill sessions!', author_id: 0, author_name: 'Community', tags: ['teaching', 'remote'], pinned: true, views: 156, replies: [], created_at: new Date(Date.now() - 7200000).toISOString() },
+      { title: 'How to prepare for your first skill exchange', content: 'A guide for newcomers on getting the most from skill exchanges.', author_id: 0, author_name: 'Community', tags: ['beginner', 'tips'], pinned: false, views: 89, replies: [], created_at: new Date(Date.now() - 18000000).toISOString() },
+      { title: 'Share your SkillBank success stories!', content: 'Tell us about your best exchanges and what you learned!', author_id: 0, author_name: 'Community', tags: ['stories', 'success'], pinned: false, views: 478, replies: [], created_at: new Date(Date.now() - 345600000).toISOString() },
+    ];
+    defaults.forEach(t => db.insert('forum_threads', t));
+    threads = db.findAll('forum_threads', () => true);
+  }
+  threads = threads.map(t => ({ ...t, reply_count: (t.replies || []).length }))
+    .sort((a, b) => (b.pinned ? 1 : 0) - (a.pinned ? 1 : 0) || new Date(b.created_at) - new Date(a.created_at));
+  res.json(threads);
+});
+
+router.get('/forums/:id', authMiddleware, (req, res) => {
+  const thread = db.findOne('forum_threads', t => t.id === parseInt(req.params.id));
+  if (!thread) return res.status(404).json({ error: 'Thread not found' });
+  db.update('forum_threads', t => t.id === thread.id, { views: (thread.views || 0) + 1 });
+  res.json({ ...thread, reply_count: (thread.replies || []).length });
+});
+
+router.post('/forums', authMiddleware, (req, res) => {
+  const { title, content, tags } = req.body;
+  if (!title) return res.status(400).json({ error: 'Title required' });
+  const user = db.findOne('users', u => u.id === req.userId);
+  const thread = db.insert('forum_threads', { title, content: content || '', author_id: req.userId, author_name: user?.name, tags: tags || [], pinned: false, views: 0, replies: [], created_at: new Date().toISOString() });
+  res.json({ id: thread.lastInsertRowid });
+});
+
+router.post('/forums/:id/reply', authMiddleware, (req, res) => {
+  const thread = db.findOne('forum_threads', t => t.id === parseInt(req.params.id));
+  if (!thread) return res.status(404).json({ error: 'Thread not found' });
+  if (!req.body.content?.trim()) return res.status(400).json({ error: 'Reply content required' });
+  const user = db.findOne('users', u => u.id === req.userId);
+  const replies = thread.replies || [];
+  replies.push({ id: Date.now(), author_id: req.userId, author_name: user?.name, content: req.body.content.trim(), created_at: new Date().toISOString() });
+  db.update('forum_threads', t => t.id === thread.id, { replies, views: (thread.views || 0) + 1 });
+  res.json({ reply_count: replies.length });
+});
+
 module.exports = router;
+
