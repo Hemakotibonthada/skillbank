@@ -3,6 +3,8 @@ services:
     build: .
     container_name: ${CIRCUVENT_CONTAINER_NAME}
     restart: unless-stopped
+    cpus: 1.0
+    mem_limit: 1024m
     env_file:
       - ${CIRCUVENT_ENV_FILE}
     volumes:
