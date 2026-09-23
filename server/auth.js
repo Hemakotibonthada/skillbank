@@ -1,5 +1,9 @@
 const jwt = require('jsonwebtoken');
-const JWT_SECRET = process.env.JWT_SECRET || 'skillbank_secret_key';
+const { createHash } = require('crypto');
+const JWT_SECRET = process.env.JWT_SECRET || (process.env.DATABASE_URL
+  ? createHash('sha256').update(`skillbank:jwt:${process.env.DATABASE_URL}`).digest('hex')
+  : (process.env.NODE_ENV === 'production' ? '' : 'skillbank-local-development-only'));
+if (!JWT_SECRET) throw new Error('Set JWT_SECRET or DATABASE_URL before starting in production');
 
 function authMiddleware(req, res, next) {
   const header = req.headers.authorization;

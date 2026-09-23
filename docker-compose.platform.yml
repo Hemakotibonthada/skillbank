@@ -1,0 +1,27 @@
+services:
+  web:
+    build: .
+    container_name: ${CIRCUVENT_CONTAINER_NAME}
+    restart: unless-stopped
+    env_file:
+      - ${CIRCUVENT_ENV_FILE}
+    volumes:
+      - skillbank_data:/app/data
+    networks:
+      - coolify
+      - platform_platform-net
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:4002/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 20s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
+volumes:
+  skillbank_data:
+
+networks:
+  coolify:
+    external: true
+  platform_platform-net:
+    external: true

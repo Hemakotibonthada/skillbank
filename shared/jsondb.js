@@ -17,7 +17,10 @@ class JsonDB {
   }
 
   _save() {
-    fs.writeFileSync(this.filePath, JSON.stringify(this.data, null, 2));
+    fs.mkdirSync(path.dirname(this.filePath), { recursive: true });
+    const temporaryPath = `${this.filePath}.${process.pid}.tmp`;
+    fs.writeFileSync(temporaryPath, JSON.stringify(this.data, null, 2));
+    fs.renameSync(temporaryPath, this.filePath);
   }
 
   _ensureTable(table) {

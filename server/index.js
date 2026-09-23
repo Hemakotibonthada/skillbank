@@ -13,6 +13,7 @@ const PORT = process.env.PORT || 4002;
 
 app.use(cors());
 app.use(express.json());
+app.get('/api/health', (_req, res) => res.json({ ok: true, service: 'skillbank' }));
 app.use(express.static(path.join(__dirname, '..', 'client', 'dist')));
 app.use('/api', routes);
 app.get('*', (req, res) => res.sendFile(path.join(__dirname, '..', 'client', 'dist', 'index.html')));
